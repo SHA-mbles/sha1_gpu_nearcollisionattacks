@@ -1,5 +1,59 @@
 # SHA-1 GPU near-collision attacks
 
+## This fork
+
+This repository is a fork of the original code from https://github.com/cr-marcstevens/sha1_gpu_nearcollisionattacks
+It implements improvements from the following publication:
+
+- [*SHA-1 is a Shambles: First Chosen-Prefix Collision on SHA-1 and Application to the PGP Web of Trust*](https://eprint.iacr.org/2020/014.pdf), Gaëtan Leurent, Thomas Peyrin, USENIX Security '20, to appear.
+
+  See also https://SHA-mbles.github.io
+
+  This code improves the shatterednc2 attack ("Find your own shattered 2nd near-collision block pair" below)
+
+## Building
+
+ - Update the parameter `BLOCKS` at the top of `shattered_nc2/cuda_step14-60.cu` to twice the number of streaming multiprocessors in your GPU (eg 26 for a GTX 970, or 58 for a GTX 1080 Ti).
+
+ - `autoreconf --install`
+   (You may need to install the autoconf-archive package from your distribution)
+
+ - `./configure [--with-cuda=/usr/local/cuda-X.X] [--enable-cudagencode=50,52]`
+   (Make sure to enable the correct gencode for your GPU, eg 61 for a GTX 1080 Ti)
+
+ - `make`
+
+## Running
+
+ - Expected GPU runtime: *22 years* on a single GTX-970
+
+ - Generate basesolutions (32 base64-encoded per textline)
+
+ `bin/shatterednc2_basesolgen -g -o nc2_basesols.txt -m 64`
+
+ - Run GPU attack:
+
+ `bin/shatterednc2_gpuattack -a -i nc2_basesols.txt -o nc2_q61sols.txt`
+
+ - Check for collision among 61-step solutions:
+ 
+ `bin/shatterednc2_basesolgen -v -i nc2_q61sols.txt | grep Found -B88 -A52`
+
+- Repeat until collision found
+
+## Important note
+
+The code to generate base-solutions is suboptimal.  We need base
+solutions with more constraints than for the Shattered attack, so we
+just filter the base-solutions that satisfy the extra conditions.  This code should be rewritten.
+
+In the Shambles attack, we actually used a different framework to
+generate base-solutions for the differential trails used in the
+attack.
+
+
+# Original README
+
 ## Publications
 
 This repository contains the source code belonging to three scientific publications:
@@ -21,6 +75,7 @@ This repository contains the source code belonging to three scientific publicati
   The first near-collision attack of this project was already published in EUROCRYPT 2013 and is available at https://github.com/cr-marcstevens/hashclash.
 
   See also https://shattered.it
+
 
 ## Requirements
 
