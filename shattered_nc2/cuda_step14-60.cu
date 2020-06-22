@@ -35,6 +35,9 @@ move neutral bits without bug
 #endif
 
 
+#define CB21
+//#define CB23
+//#define SMALL26BUF
 
 
 
@@ -208,21 +211,39 @@ MANAGED2 __device__ control_20_1_t  q19_solutions_ctl_bu[BLOCKS];
 #define Q19SOLBUF                   q19_solutions_buf[blockIdx.x]
 #define Q19SOLCTL                   q19_solutions_ctl
 
+#ifdef CB21
+__device__ void stepQ23(uint32_t q21_sol0);
+__shared__ warp_callback_buf1_t<stepQ23> cb21buf[THREADS_PER_BLOCK/32];
+#define CB21BUF cb21buf[threadIdx.x/32]
+#else
 MANAGED  __device__ buffer_20_1_t   q21_solutions_buf[BLOCKS];
          __shared__ control_20_1_t  q21_solutions_ctl;
 MANAGED2 __device__ control_20_1_t  q21_solutions_ctl_bu[BLOCKS];
 #define Q21SOLBUF                   q21_solutions_buf[blockIdx.x]
 #define Q21SOLCTL                   q21_solutions_ctl
+#endif
 
+#ifdef CB23
+__device__ void stepQ26(uint32_t q23_sol0, uint32_t bo_mask);
+__shared__ warp_callback_buf2_t<stepQ26> cb23buf[THREADS_PER_BLOCK/32];
+#define CB23BUF cb23buf[threadIdx.x/32]
+#else
 MANAGED  __device__ buffer_20_2_t           q23_solutions_buf[BLOCKS];
          __shared__ control_20_2_t          q23_solutions_ctl;
 MANAGED2 __device__ control_20_2_t          q23_solutions_ctl_bu [BLOCKS];
 #define Q23SOLBUF                           q23_solutions_buf    [blockIdx.x]
 #define Q23SOLCTL                           q23_solutions_ctl
+#endif
 
+#ifdef SMALL26BUF
+MANAGED __device__ buffer_20_2_t  q26_solutions_buf[BLOCKS];
+__shared__ control_20_2_t q26_solutions_ctl;
+MANAGED2 __device__ control_20_2_t q26_solutions_ctl_bu [BLOCKS];
+#else
 MANAGED __device__ buffer_sol_t  q26_solutions_buf[BLOCKS];
 __shared__ control_sol_t q26_solutions_ctl;
 MANAGED2 __device__ control_sol_t q26_solutions_ctl_bu [BLOCKS];
+#endif
 #define Q26SOLBUF                 q26_solutions_buf    [blockIdx.x]
 #define Q26SOLCTL                 q26_solutions_ctl
 
@@ -405,8 +426,15 @@ __device__ void stepQ14aux(uint32_t q14idx)
 	PERF_START_COUNTER(14);
 	using namespace dev;
 
-	for (unsigned i = 0; i < (1<<5); ++i)
-		Q14AUXBUF.write(Q14AUXCTL, true, (q14idx | (i << 20)));
+	uint32_t q10 = Q14SOLBUF.get<15+10>(q14idx);
+	uint32_t q11 = Q14SOLBUF.get<15+11>(q14idx);
+
+	for (unsigned i = 0; i < (1<<5); i+=4) {
+		q11 += i<<6;
+		bool valid_sol = (0 == (((q10 ^ q11)>>2) & Q12BMASK));
+		Q14AUXBUF.write(Q14AUXCTL, valid_sol, (q14idx | (i << 20)));
+		q11 -= i<<6;
+	}
 
 	PERF_STOP_COUNTER(14);
 }
@@ -458,7 +486,6 @@ __device__ void stepQ15(uint32_t q14auxidx)
 	bool valid_sol11 = (0 == ((oldq12 ^ q12) & Qcondmask[QOFF + 12]));
 
 	// W12 neutral bits
-	for (int W12t2b  = 0; W12t2b  < 2; ++W12t2b)  { m12 ^= 0x4; m13 ^= 0x80100000; m14 ^= 0x40fe0002; m15 ^= 0x17e8004;
 	for (int W12t14b = 0; W12t14b < 2; ++W12t14b) { m12 ^= 0x4000; m14 ^= 0x2800;
 	for (int W12t15b = 0; W12t15b < 2; ++W12t15b) { m12 ^= 0x8000; m14 ^= 0x5000; m15 ^= 0x800;
 	for (int W12t16b = 0; W12t16b < 2; ++W12t16b) { m12 ^= 0x10000; m13 ^= 0x1304000; m14 ^= 0x358800; m15 ^= 0x4003c800;
@@ -488,7 +515,7 @@ __device__ void stepQ15(uint32_t q14auxidx)
 	Q15SOLBUF.write(Q15SOLCTL, valid_sol13, q11, q12, q13, q14, q15, m10, m11, m12, m13, m14, m15, q14idx);
 
 	}}
-	}}}}}}}}
+	}}}}}}}
 	}}}}}}}
 
 	PERF_STOP_COUNTER(15);
@@ -529,11 +556,14 @@ __device__ void stepQ16(uint32_t thread_rd_idx)
 		q13 += rotate_left(w11_q16_nb, 5);
 
 		uint32_t w12_q16_nb = 0;
-		for (unsigned k = 0; k < (1<<5); ++k)
+		for (unsigned k = 0; k < (1<<2); ++k)
 		{
 			NEXT_NB(w12_q16_nb, W12NBQ16M);
 
-			m12 &= ~W12NBQ16M;
+			// Use W12[9,10,11] to enforce W12[9] != W11[4], W12[10] != W11[5] and W12[11] != W11[6]
+			w12_q16_nb += (~m11<<5)&(7<<9);
+
+			m12 &= ~(W12NBQ16M|(7<<9));
 			m12 |= w12_q16_nb;
 
 			// first flips
@@ -585,6 +615,8 @@ __device__ void stepQ16(uint32_t thread_rd_idx)
 			m14 ^= m14f;
 
 			q13 -= w12_q16_nb;
+
+			w12_q16_nb &= W12NBQ16M;
 		}
 
 		q13 -= rotate_left(w11_q16_nb, 5);
@@ -715,12 +747,15 @@ __device__ void stepQ18(uint32_t thread_rd_idx)
 	uint32_t q09 = Q14SOLBUF.get<15+9>(q14idx);
 	uint32_t q10 = Q14SOLBUF.get<15+10>(q14idx);
 	uint32_t m01 = Q14SOLBUF.get<1>(q14idx);
+	uint32_t m02 = Q14SOLBUF.get<2>(q14idx);
 	uint32_t m03 = Q14SOLBUF.get<3>(q14idx);
+	uint32_t m04 = Q14SOLBUF.get<4>(q14idx);
 	uint32_t m09 = Q14SOLBUF.get<9>(q14idx);
 
 	uint32_t q11 = Q15SOLBUF.get<0>(q15idx);
 	uint32_t q12 = Q15SOLBUF.get<1>(q15idx);
 	uint32_t q13 = Q15SOLBUF.get<2>(q15idx);
+	uint32_t m10 = Q15SOLBUF.get<5>(q15idx);
 	uint32_t m11 = Q15SOLBUF.get<6>(q15idx);
 	uint32_t m12 = Q15SOLBUF.get<7>(q15idx);
 	uint32_t m13 = Q15SOLBUF.get<8>(q15idx);
@@ -758,11 +793,14 @@ __device__ void stepQ18(uint32_t thread_rd_idx)
 	uint32_t oldq17 = sha1_round1(oldq16, q15, q14, q13, q12, m16);
 
 	uint32_t w13_q18_nb = 0;
-	for (unsigned l = 0; l < (1<<5); ++l)
+	for (unsigned l = 0; l < (1<<4); ++l)
 	{
 		NEXT_NB(w13_q18_nb, W13NBQ18M);
 
-		m13 &= ~W13NBQ18M;
+		// Force W13[5] == 1
+		w13_q18_nb += 1<<5;
+
+		m13 &= ~(W13NBQ18M|(1<<5));
 		m13 |= w13_q18_nb;
 
 		q14 += w13_q18_nb;
@@ -792,6 +830,12 @@ __device__ void stepQ18(uint32_t thread_rd_idx)
 			;
 			valid_sol &= (0 == ((q18 ^ q18nessies) & Qcondmask[QOFF + 18]));
 
+			// Early filtering
+			uint32_t m18 = sha1_mess(m15, m10, m04, m02);
+			uint32_t q19 = sha1_round1(q18, q17, q16, q15, q14, m18);
+			valid_sol &= (q19 & 0x80000000) || (q19 & 0x60000000) == 0x60000000;
+
+
 			Q18SOLBUF.write(Q18SOLCTL, valid_sol, q12, q13, q14, q15, q16, q17, m11, m12, m13, m14, m15, q15idx);
 		}
 		// the unique w14_q18_nb inline; val = 1
@@ -814,6 +858,12 @@ __device__ void stepQ18(uint32_t thread_rd_idx)
 			;
 			valid_sol &= (0 == ((q18 ^ q18nessies) & Qcondmask[QOFF + 18]));
 
+			// Early filtering
+			uint32_t m18 = sha1_mess(m15, m10, m04, m02);
+			uint32_t q19 = sha1_round1(q18, q17, q16, q15, q14, m18);
+			valid_sol &= (q19 & 0x80000000) || (q19 & 0x60000000) == 0x60000000;
+
+
 			Q18SOLBUF.write(Q18SOLCTL, valid_sol, q12, q13, q14, q15, q16, q17, m11, m12, m13, m14 ^ W14NBQ18M, m15, q15idx);
 
 			// no need to undo m17, as it's fully recomputed at every iteration anyway
@@ -827,6 +877,8 @@ __device__ void stepQ18(uint32_t thread_rd_idx)
 		m14 ^= (w13_q18_nb & 0x00000200) << 2;
 
 		m16 ^= rotate_left(w13_q18_nb, 1);
+
+		w13_q18_nb &= W13NBQ18M;
 	}
 
 	PERF_STOP_COUNTER(18);
@@ -856,20 +908,24 @@ __device__ void stepQ19(uint32_t thread_rd_idx)
 	uint32_t m16;
 	uint32_t m17;
 	uint32_t m18;
+	uint32_t m19;
 	{
 		uint32_t m00 = Q14SOLBUF.get<0>(q14idx);
 		uint32_t m01 = Q14SOLBUF.get<1>(q14idx);
 		uint32_t m02 = Q14SOLBUF.get<2>(q14idx);
 		uint32_t m03 = Q14SOLBUF.get<3>(q14idx);
 		uint32_t m04 = Q14SOLBUF.get<4>(q14idx);
+		uint32_t m05 = Q14SOLBUF.get<5>(q14idx);
 		uint32_t m08 = Q14SOLBUF.get<8>(q14idx);
 		uint32_t m09 = Q14SOLBUF.get<9>(q14idx);
 		uint32_t m10 = Q15SOLBUF.get<5>(q15idx);
+		uint32_t m11 = Q18SOLBUF.get<6>(thread_rd_idx);
 		uint32_t m13 = Q18SOLBUF.get<8>(thread_rd_idx);
 
 		m16 = sha1_mess(m13, m08, m02, m00);
 		m17 = sha1_mess(0, m09, m03, m01);
 		m18 = sha1_mess(0, m10, m04, m02);
+		m19 = sha1_mess(m16, m11, m05, m03);
 	}
 
 	uint32_t oldq16 = q16;
@@ -890,11 +946,16 @@ __device__ void stepQ19(uint32_t thread_rd_idx)
 		bool valid_sol1 = (0 == ((oldq16 ^ q16) & Qcondmask[QOFF + 16]));
 
 		uint32_t w15_q19_nb = 0;
-		for (unsigned k = 0; k < (1<<2); ++k)
+		for (unsigned k = 0; k < (1<<1); ++k)
 		{
 			NEXT_NB(w15_q19_nb, W15NBQ19M);
 
-			m15 &= ~W15NBQ19M;
+			// Force W17[8] != W18[13]
+			// W17[8] = W1[7] + W3[7] + W9[7] + W14[7]
+			// W18[13] = W2[12] + W4[12] + W10[12] + W15[12]
+			w15_q19_nb += ((~m17<<4) ^ (m18>>1)) & (1<<12);
+
+			m15 &= ~(W15NBQ19M|(1<<12));
 			m15 |= w15_q19_nb;
 
 			m18 ^= rotate_left(m15, 1);
@@ -918,13 +979,20 @@ __device__ void stepQ19(uint32_t thread_rd_idx)
 			;
 			valid_sol2 &= (0 == ((newq19 ^ q19nessies) & Qcondmask[QOFF + 19]));
 
+			// Early filtering at step 20 (not broken by A19 neutral bits)
+			uint32_t newq20 = sha1_round1(newq19, newq18, newq17, q16, q15, m19);
+			valid_sol2 &= (newq20&(1U<<30)) || (newq20&(1U<<31));
+
+
 			uint32_t sol_val_0 = pack_q19q21_sol0(thread_rd_idx, m14, m15);
 			WARP_TMP_BUF.write1(valid_sol2, sol_val_0, Q19SOLBUF, Q19SOLCTL);
 
 			m18 ^= rotate_left(m15, 1);
 
 			q16 -= w15_q19_nb;
-		}
+
+			w15_q19_nb &= W15NBQ19M;
+	}
 
 		m17 ^= rotate_left(m14, 1);
 
@@ -975,6 +1043,8 @@ __device__ void stepQ201(uint32_t thread_rd_idx)
 	uint32_t m18;
 	uint32_t m19;
 	uint32_t m20;
+	uint32_t m21;
+	uint32_t m22;
 	{
 		uint32_t m00 = Q14SOLBUF.get<0>(q14idx);
 		uint32_t m01 = Q14SOLBUF.get<1>(q14idx);
@@ -983,6 +1053,7 @@ __device__ void stepQ201(uint32_t thread_rd_idx)
 		uint32_t m04 = Q14SOLBUF.get<4>(q14idx);
 		uint32_t m05 = Q14SOLBUF.get<5>(q14idx);
 		uint32_t m06 = Q14SOLBUF.get<6>(q14idx);
+		uint32_t m07 = Q14SOLBUF.get<7>(q14idx);
 		uint32_t m08 = Q14SOLBUF.get<8>(q14idx);
 		uint32_t m09 = Q14SOLBUF.get<9>(q14idx);
 		uint32_t m10 = Q15SOLBUF.get<5>(q15idx);
@@ -995,6 +1066,8 @@ __device__ void stepQ201(uint32_t thread_rd_idx)
 		m18 = sha1_mess(0, m10, m04, m02);
 		m19 = sha1_mess(m16, m11, m05, m03);
 		m20 = sha1_mess(0, m12, m06, m04);
+		m21 = sha1_mess(0, m13, m07, m05);
+		m22 = sha1_mess(m19, 0, m08, m06);
 	}
 
 	uint32_t w14_q20_nb = 0;
@@ -1010,16 +1083,32 @@ __device__ void stepQ201(uint32_t thread_rd_idx)
 
 		m17 ^= rotate_left(m14, 1);
 		m20 ^= rotate_left(m17, 1);
+		m22 ^= rotate_left(m14, 1);
+
+		// compute Q19,Q20 before using W15 neutral bits
+		uint32_t oldq20, oldq19;
+		{
+		  uint32_t oldq17 = sha1_round1(q16, q15, q14, q13, q12, m16);
+		  uint32_t oldq18 = sha1_round1(oldq17, q16, q15, q14, q13, m17);
+		  oldq19 = sha1_round1(oldq18, oldq17, q16, q15, q14, m18^rotate_left(m15, 1));
+		  oldq20 = sha1_round1(oldq19, oldq18, oldq17, q16, q15, m19);
+		}
 
 		uint32_t w15_q20_nb = 0;
-		for (unsigned k = 0; k < (1<<5); ++k)
+		for (unsigned k = 0; k < (1<<3); ++k)
 		{
 			NEXT_NB(w15_q20_nb, W15NBQ20M);
 
-			m15 &= ~W15NBQ20M;
+			// Use W15[7] to flip A20[27] if needed (A20[27] must be equal to A19[29])
+			w15_q20_nb += (((oldq20>>20)+w15_q20_nb)^((oldq19>>22)))&(1<<7);
+			// Use W15[9] to flip A20[29] if needed (A20[29] must be 1)
+			w15_q20_nb += (~((oldq20>>20)+w15_q20_nb))&(1<<9);
+
+			m15 &= ~(W15NBQ20M|(1<<9)|(1<<7));
 			m15 |= w15_q20_nb;
 
 			m18 ^= rotate_left(m15, 1);
+			m21 ^= rotate_left(m18, 1);
 
 			q16 += w15_q20_nb;
 
@@ -1047,6 +1136,9 @@ __device__ void stepQ201(uint32_t thread_rd_idx)
 			;
 			valid_sol &= (0 == ((newq20 ^ q20nessies) & Qcondmask[QOFF + 20]));
 
+			// WARNING: Q21 cond broken with probability 1/2
+			// when using both W9[7] boomerang and W11[5] boomerang (not very neutral)
+			// We still get better results by testing it here...
 			uint32_t newq21 = sha1_round2(newq20, newq19, newq18, newq17, q16, m20);
 			uint32_t q21nessies = Qset1mask[QOFF + 21] 	^ (Qprevmask[QOFF + 21] & newq20)
 //													^ (Qprevrmask [QOFF + 21] & rotate_left(newq20, 30))
@@ -1054,32 +1146,52 @@ __device__ void stepQ201(uint32_t thread_rd_idx)
 			;
 			valid_sol &= (0 == ((newq21 ^ q21nessies) & Qcondmask[QOFF + 21]));
 
+			// Early filtering
+			// Also broken when using both W9[7] boomerang and W11[5] boomerang
+			/* uint32_t newq22 = sha1_round2(newq21, newq20, newq19, newq18, newq17, m21); */
+			/* uint32_t newq23 = sha1_round2(newq22, newq21, newq20, newq19, newq18, m22); */
+			/* valid_sol &= ((newq23>>27)&1) == ((newq21>>29)&1); */
+
 			uint32_t sol_val_0 = pack_q19q21_sol0(q18idx, m14, m15);
+
+#ifdef CB21
+			CB21BUF.write(valid_sol, sol_val_0);
+#else
 			WARP_TMP_BUF.write1(valid_sol, sol_val_0, Q21SOLBUF, Q21SOLCTL);
-
+#endif
+			m21 ^= rotate_left(m18, 1);
 			m18 ^= rotate_left(m15, 1);
-
 			q16 -= w15_q20_nb;
+			w15_q20_nb &= W15NBQ20M;
 		}
 
 		q15 -= w14_q20_nb;
 		q16 -= rotate_left(w14_q20_nb, 5);
 
+		m22 ^= rotate_left(m14, 1);
 		m20 ^= rotate_left(m17, 1);
 		m17 ^= rotate_left(m14, 1);
 	}
 
+#ifndef CB21
 	WARP_TMP_BUF.flush1(Q21SOLBUF, Q21SOLCTL);
+#endif
 	PERF_STOP_COUNTER(21);
 }
 
+#ifdef CB21
+__device__ void stepQ23(uint32_t q21_sol0)
+{
+	PERF_START_COUNTER(23);
+#else
 __device__ void stepQ23(uint32_t thread_rd_idx)
 {
 	PERF_START_COUNTER(23);
 
-	using namespace dev;
-
 	uint32_t q21_sol0 = Q21SOLBUF.get<0>(thread_rd_idx);
+#endif
+
+	using namespace dev;
 
 	const uint32_t q18idx = unpack_q18idx(q21_sol0);
 	const uint32_t q15idx = Q18SOLBUF.get<11>(q18idx);
@@ -1098,22 +1210,6 @@ __device__ void stepQ23(uint32_t thread_rd_idx)
 	uint32_t q22;
 	uint32_t q23;
 
-	uint32_t m00 = Q14SOLBUF.get<0>(q14idx);
-	uint32_t m01 = Q14SOLBUF.get<1>(q14idx);
-	uint32_t m02 = Q14SOLBUF.get<2>(q14idx);
-	uint32_t m03 = Q14SOLBUF.get<3>(q14idx);
-	uint32_t m04 = Q14SOLBUF.get<4>(q14idx);
-	uint32_t m05 = Q14SOLBUF.get<5>(q14idx);
-	uint32_t m06 = Q14SOLBUF.get<6>(q14idx);
-	uint32_t m07 = Q14SOLBUF.get<7>(q14idx);
-	uint32_t m08 = Q14SOLBUF.get<8>(q14idx);
-	uint32_t m09 = Q14SOLBUF.get<9>(q14idx);
-	uint32_t m10 = Q15SOLBUF.get<5>(q15idx);
-	uint32_t m11 = Q18SOLBUF.get<6>(q18idx);
-	uint32_t m12 = Q18SOLBUF.get<7>(q18idx);
-	uint32_t m13 = Q18SOLBUF.get<8>(q18idx);
-	uint32_t m14 = Q18SOLBUF.get<9>(q18idx);
-	uint32_t m15 = Q18SOLBUF.get<10>(q18idx);
 	uint32_t m16;
 	uint32_t m17;
 	uint32_t m18;
@@ -1124,6 +1220,23 @@ __device__ void stepQ23(uint32_t thread_rd_idx)
 	uint32_t m23;
 
 	{
+		uint32_t m00 = Q14SOLBUF.get<0>(q14idx);
+		uint32_t m01 = Q14SOLBUF.get<1>(q14idx);
+		uint32_t m02 = Q14SOLBUF.get<2>(q14idx);
+		uint32_t m03 = Q14SOLBUF.get<3>(q14idx);
+		uint32_t m04 = Q14SOLBUF.get<4>(q14idx);
+		uint32_t m05 = Q14SOLBUF.get<5>(q14idx);
+		uint32_t m06 = Q14SOLBUF.get<6>(q14idx);
+		uint32_t m07 = Q14SOLBUF.get<7>(q14idx);
+		uint32_t m08 = Q14SOLBUF.get<8>(q14idx);
+		uint32_t m09 = Q14SOLBUF.get<9>(q14idx);
+		uint32_t m10 = Q15SOLBUF.get<5>(q15idx);
+		uint32_t m11 = Q18SOLBUF.get<6>(q18idx);
+		uint32_t m12 = Q18SOLBUF.get<7>(q18idx);
+		uint32_t m13 = Q18SOLBUF.get<8>(q18idx);
+		uint32_t m14 = Q18SOLBUF.get<9>(q18idx);
+		uint32_t m15 = Q18SOLBUF.get<10>(q18idx);
+
 		uint32_t w14_sol_nb = unpack_w14_nbs(q21_sol0);
 		uint32_t w15_sol_nb = unpack_w15_nbs(q21_sol0);
 
@@ -1133,23 +1246,8 @@ __device__ void stepQ23(uint32_t thread_rd_idx)
 		q15 += w14_sol_nb;
 		q16 += rotate_left(w14_sol_nb, 5);
 		q16 += w15_sol_nb;
-	}
 
-	// booms change: m09, m10, m14 => m17(m09,m14), m18(m10), m22(m14)
-
-	m16 = sha1_mess(m13, m08, m02, m00);
-
-	uint32_t q10_bo = 0;
-	for (unsigned m = 0; m < (1<<1); ++m)
-	{
-		NEXT_NB(q10_bo, Q10BOOMS);
-
-		// TODO optim
-		m09 ^= q10_bo;
-	   	m10 ^= rotate_left(q10_bo, 5);
-		m14 ^= rotate_right(q10_bo, 2);
-
-		// TODO optim
+		m16 = sha1_mess(m13, m08, m02, m00);
 		m17 = sha1_mess(m14, m09, m03, m01);
 		m18 = sha1_mess(m15, m10, m04, m02);
 		m19 = sha1_mess(m16, m11, m05, m03);
@@ -1157,65 +1255,147 @@ __device__ void stepQ23(uint32_t thread_rd_idx)
 		m21 = sha1_mess(m18, m13, m07, m05);
 		m22 = sha1_mess(m19, m14, m08, m06);
 		m23 = sha1_mess(m20, m15, m09, m07);
-
-		q17 = sha1_round1(q16, q15, q14, q13, q12, m16);
-		q18 = sha1_round1(q17, q16, q15, q14, q13, m17);
-
-		q19 = sha1_round1(q18, q17, q16, q15, q14, m18);
-		uint32_t q19nessies = Qset1mask[QOFF + 19] 	//^ (Qprevmask[QOFF + 19] & q18)
-//														^ (Qprevrmask [QOFF + 19] & rotate_left(q18, 30))
-														^ (Qprev2rmask[QOFF + 19] & rotate_left(q17, 30))
-		;
-		bool valid_sol = 0 == ((q19 ^ q19nessies) & Qcondmask[QOFF + 19]);
-
-		q20 = sha1_round1(q19, q18, q17, q16, q15, m19);
-		uint32_t q20nessies = Qset1mask[QOFF + 20] 	//^ (Qprevmask[QOFF + 20] & q19)
-														^ (Qprevrmask [QOFF + 20] & rotate_left(q19, 30))
-//														^ (Qprev2rmask[QOFF + 20] & rotate_left(q18, 30))
-		;
-		valid_sol &= 0 == ((q20 ^ q20nessies) & Qcondmask[QOFF + 20]);
-
-		q21 = sha1_round2(q20, q19, q18, q17, q16, m20);
-		uint32_t q21nessies = Qset1mask[QOFF + 21] 	^ (Qprevmask[QOFF + 21] & q20)
-//													^ (Qprevrmask [QOFF + 21] & rotate_left(q20, 30))
-//													^ (Qprev2rmask[QOFF + 21] & rotate_left(q19, 30))
-		;
-		valid_sol &= 0 == ((q21 ^ q21nessies) & Qcondmask[QOFF + 21]);
-
-		q22 = sha1_round2(q21, q20, q19, q18, q17, m21);
-		uint32_t q22nessies = Qset1mask[QOFF + 22] 	// ^ (Qprevmask[QOFF + 22] & q21)
-													^ (Qprevrmask [QOFF + 22] & rotate_left(q21, 30))
-//													^ (Qprev2rmask[QOFF + 22] & rotate_left(q20, 30))
-		;
-		q22nessies ^= (m23 & 0x08000000); // message-dependent condition
-		valid_sol &= 0 == ((q22 ^ q22nessies) & Qcondmask[QOFF + 22]);
-
-		q23 = sha1_round2(q22, q21, q20, q19, q18, m22);
-		uint32_t q23nessies = Qset1mask[QOFF + 23] 	^ (Qprevmask[QOFF + 23] & q22)
-//													^ (Qprevrmask [QOFF + 23] & rotate_left(q22, 30))
-													^ (Qprev2rmask[QOFF + 23] & rotate_left(q21, 30))
-		;
-		valid_sol &= 0 == ((q23 ^ q23nessies) & Qcondmask[QOFF + 23]);
-
-		WARP_TMP_BUF.write2(valid_sol, q21_sol0, q10_bo, Q23SOLBUF, Q23SOLCTL);
-
-		m09 ^= q10_bo;
-	   	m10 ^= rotate_left(q10_bo, 5);
-		m14 ^= rotate_right(q10_bo, 2);
 	}
 
+
+	// compute Q21, Q22 before using boomerangs
+	uint32_t oldq21, oldq22;
+	{
+		uint32_t oldq17 = sha1_round1(q16, q15, q14, q13, q12, m16);
+		uint32_t oldq18 = sha1_round1(oldq17, q16, q15, q14, q13, m17);
+		uint32_t oldq19 = sha1_round1(oldq18, oldq17, q16, q15, q14, m18);
+		uint32_t oldq20 = sha1_round1(oldq19, oldq18, oldq17, q16, q15, m19);
+		oldq21 = sha1_round2(oldq20, oldq19, oldq18, oldq17, q16, m20);
+		oldq22 = sha1_round2(oldq21, oldq20, oldq19, oldq18, oldq17, m21);
+	}
+
+	// Single boomerang
+	for (uint32_t q10_bo = 0; q10_bo <= Q10BOOMS; q10_bo += Q10BOOMS)
+		{
+			// Message update at end of loop
+			/* m09 ^= q10_bo; */
+			/* m10 ^= rotate_left(q10_bo, 5); */
+			/* m14 ^= rotate_right(q10_bo, 2); */
+
+			uint32_t q10_bo_flip17 = m17 - (m17^(q10_bo>>1)); // Sign of bit flip
+
+			// Single boomerang
+			for (uint32_t q12_bo0 = 0; q12_bo0 <= Q12BOOMS; q12_bo0 += Q12BOOMS)
+				{
+					uint32_t q12_bo = q12_bo0;
+					// Use boomerang W11[4] to flip A22[27] if needed (A22[27] = W23[27] + A21[29] + 1)
+					q12_bo ^= (~((oldq22>>23)+(q10_bo_flip17>>3)-q12_bo)^(oldq21>>25)^(m23>>23))&(1<<4); // Note: Q12 boomerang are reversed
+
+					// Use boomerang W11[6] to flip A22[29] if needed (A22[29] must be 1)
+					q12_bo ^= (~((oldq22>>23)+(q10_bo_flip17>>3)-q12_bo))&(1<<6); // Note: Q12 boomerang are reversed
+
+					// Only update extended message
+					/* m11 ^= q12_bo; */
+					/* m12 ^= rotate_left(q12_bo, 5); */
+					/* // Bad interaction between W9[7] boomerang and W11[5] boomerang */
+					/* // Flip W13[5] to fix it */
+					/* m13 ^= (q10_bo>>2) & q12_bo; */
+					q12 ^= q12_bo;
+
+					// Q12 booms change: m11, m12, m13 => m16, m19, m20, m21, m22, m23
+					uint32_t dm13 = (q10_bo>>2) & q12_bo;
+					m16 ^= rotate_left(dm13,1);    // dm13<<<1
+					uint32_t dm19 = rotate_left(dm13,2)^rotate_left(q12_bo,1); // dm16<<<1 ^ dm11<<<1
+					m19 ^= dm19;
+					m20 ^= rotate_left(q12_bo,6); // dm12<<<1
+					m21 ^= rotate_left(dm13,1);   // dm13<<<1
+					m22 ^= rotate_left(dm19,1);   // dm19<<<1
+					m23 ^= rotate_left(q12_bo,7); // dm20<<<1
+
+					q17 = sha1_round1(q16, q15, q14, q13, q12, m16);
+					q18 = sha1_round1(q17, q16, q15, q14, q13, m17);
+
+					q19 = sha1_round1(q18, q17, q16, q15, q14, m18);
+					uint32_t q19nessies = Qset1mask[QOFF + 19] 	//^ (Qprevmask[QOFF + 19] & q18)
+						//														^ (Qprevrmask [QOFF + 19] & rotate_left(q18, 30))
+						^ (Qprev2rmask[QOFF + 19] & rotate_left(q17, 30))
+						;
+					bool valid_sol = 0 == ((q19 ^ q19nessies) & Qcondmask[QOFF + 19]);
+
+					q20 = sha1_round1(q19, q18, q17, q16, q15, m19);
+					uint32_t q20nessies = Qset1mask[QOFF + 20] 	//^ (Qprevmask[QOFF + 20] & q19)
+						^ (Qprevrmask [QOFF + 20] & rotate_left(q19, 30))
+						//														^ (Qprev2rmask[QOFF + 20] & rotate_left(q18, 30))
+						;
+					valid_sol &= 0 == ((q20 ^ q20nessies) & Qcondmask[QOFF + 20]);
+
+					q21 = sha1_round2(q20, q19, q18, q17, q16, m20);
+					uint32_t q21nessies = Qset1mask[QOFF + 21] 	^ (Qprevmask[QOFF + 21] & q20)
+						//													^ (Qprevrmask [QOFF + 21] & rotate_left(q20, 30))
+						//													^ (Qprev2rmask[QOFF + 21] & rotate_left(q19, 30))
+						;
+					valid_sol &= 0 == ((q21 ^ q21nessies) & Qcondmask[QOFF + 21]);
+
+					q22 = sha1_round2(q21, q20, q19, q18, q17, m21);
+					uint32_t q22nessies = Qset1mask[QOFF + 22] 	// ^ (Qprevmask[QOFF + 22] & q21)
+						^ (Qprevrmask [QOFF + 22] & rotate_left(q21, 30))
+						//													^ (Qprev2rmask[QOFF + 22] & rotate_left(q20, 30))
+						;
+					q22nessies ^= (m23 & 0x08000000); // message-dependent condition
+					valid_sol &= 0 == ((q22 ^ q22nessies) & Qcondmask[QOFF + 22]);
+
+					q23 = sha1_round2(q22, q21, q20, q19, q18, m22);
+					uint32_t q23nessies = Qset1mask[QOFF + 23] 	^ (Qprevmask[QOFF + 23] & q22)
+						//													^ (Qprevrmask [QOFF + 23] & rotate_left(q22, 30))
+						^ (Qprev2rmask[QOFF + 23] & rotate_left(q21, 30))
+						;
+					valid_sol &= 0 == ((q23 ^ q23nessies) & Qcondmask[QOFF + 23]);
+
+#ifdef CB23
+					CB23BUF.write(valid_sol, q21_sol0, q10_bo|q12_bo);
+#else
+					WARP_TMP_BUF.write2(valid_sol, q21_sol0, q10_bo|q12_bo, Q23SOLBUF, Q23SOLCTL);
+#endif
+
+					// Q12 booms change: m11, m12, m13 => m16, m19, m20, m21, m22, m23
+					m16 ^= rotate_left(dm13,1);    // dm13<<<1
+					m19 ^= dm19;
+					m20 ^= rotate_left(q12_bo,6); // dm12<<<1
+					m21 ^= rotate_left(dm13,1);   // dm13<<<1
+					m22 ^= rotate_left(dm19,1);   // dm19<<<1
+					m23 ^= rotate_left(q12_bo,7); // dm20<<<1
+
+					q12 ^= q12_bo;
+				}
+
+			// Q10 booms change: m09, m10, m14 => m17, m18, m20, m21, m22, m23
+			uint32_t dm17 = rotate_right(Q10BOOMS, 1)^rotate_left(Q10BOOMS, 1); // dm14<<<1 ^ dm9<<<1
+			m17 ^= dm17;
+			m18 ^= rotate_left(Q10BOOMS,6);  // dm10<<<1
+			m20 ^= rotate_left(dm17,1);      // dm17<<<1
+			m21 ^= rotate_left(Q10BOOMS,7);  // dm18<<<1
+			m22 ^= rotate_right(Q10BOOMS,1); // dm14<<<1
+			m23 ^= rotate_left(dm17,2)^rotate_left(Q10BOOMS, 1); // dm20<<<1 ^ dm9<<<1
+		}
+#ifndef CB23
 	WARP_TMP_BUF.flush2(Q23SOLBUF, Q23SOLCTL);
+#endif
 	PERF_STOP_COUNTER(23);
 }
 
+
+#ifdef CB23
+__device__ void stepQ26(uint32_t q23_sol0, uint32_t bo_mask)
+{
+	PERF_START_COUNTER(26);
+#else
 __device__ void stepQ26(uint32_t thread_rd_idx)
 {
 	PERF_START_COUNTER(26);
 
+	uint32_t q23_sol0 = Q23SOLBUF.get<0>(thread_rd_idx);
+	uint32_t bo_mask = Q23SOLBUF.get<1>(thread_rd_idx);
+#endif
+
 	using namespace dev;
 
-	uint32_t q23_sol0 = Q23SOLBUF.get<0>(thread_rd_idx);
-	uint32_t q10_bo = Q23SOLBUF.get<1>(thread_rd_idx);
+	uint32_t q10_bo = bo_mask & Q10BMASK;
+	uint32_t q12_bo = bo_mask & Q12BMASK;
 
 	const uint32_t q18idx = unpack_q18idx(q23_sol0);
 	const uint32_t q15idx = Q18SOLBUF.get<11>(q18idx);
@@ -1281,12 +1461,18 @@ __device__ void stepQ26(uint32_t thread_rd_idx)
 	m09 ^= q10_bo;
 	m10 ^= rotate_left(q10_bo, 5);
 	m14 ^= rotate_right(q10_bo, 2);
-
-	// booms change: m06, m07, m11 => m19(m11), m20(m06), m21(m07), m22(m06), m23(m07), m24(m08)
+	m11 ^= q12_bo;
+	m12 ^= rotate_left(q12_bo, 5);
+	q12 ^= q12_bo;
+	m13 ^= (q10_bo>>2) & q12_bo;
 
 	m16 = sha1_mess(m13, m08, m02, m00);
 	m17 = sha1_mess(m14, m09, m03, m01);
 	m18 = sha1_mess(m15, m10, m04, m02);
+
+	q17 = sha1_round1(q16, q15, q14, q13, q12, m16);
+	q18 = sha1_round1(q17, q16, q15, q14, q13, m17);
+	q19 = sha1_round1(q18, q17, q16, q15, q14, m18);
 
 	uint32_t q07_bo = 0;
 	for (unsigned m = 0; m < (1<<2); ++m)
@@ -1295,7 +1481,7 @@ __device__ void stepQ26(uint32_t thread_rd_idx)
 
 		m06 ^= q07_bo;
 		m07 ^= rotate_left(q07_bo, 5);
-		m11 ^= rotate_right(q07_bo, 2);
+		m11 -= rotate_right(q07_bo, 2);
 
 		// TODO optim
 		m19 = sha1_mess(m16, m11, m05, m03);
@@ -1308,9 +1494,6 @@ __device__ void stepQ26(uint32_t thread_rd_idx)
 		m26 = sha1_mess(m23, m18, m12, m10);
 		m27 = sha1_mess(m24, m19, m13, m11);
 
-		q17 = sha1_round1(q16, q15, q14, q13, q12, m16);
-		q18 = sha1_round1(q17, q16, q15, q14, q13, m17);
-		q19 = sha1_round1(q18, q17, q16, q15, q14, m18);
 		q20 = sha1_round1(q19, q18, q17, q16, q15, m19);
 		q21 = sha1_round2(q20, q19, q18, q17, q16, m20);
 
@@ -1363,16 +1546,22 @@ __device__ void stepQ26(uint32_t thread_rd_idx)
 		q26nessies ^= (m27 & 0x08000000); // message-dependent condition
 		valid_sol &= 0 == ((q26 ^ q26nessies) & Qcondmask[QOFF + 26]);
 
+#ifdef SMALL26BUF
+		WARP_TMP_BUF.write2(valid_sol, q23_sol0, bo_mask|(q07_bo<<16), Q26SOLBUF, Q26SOLCTL);
+#else
 		Q26SOLBUF.write(Q26SOLCTL, valid_sol, q19, q20, q21, q22, q23,
 												m12, m13, m14, m15, m16, m17, m18, m19,
 												m20, m21, m22, m23, m24, m25, m26, m27);
-
+#endif
 
 		m06 ^= q07_bo;
 		m07 ^= rotate_left(q07_bo, 5);
-		m11 ^= rotate_right(q07_bo, 2);
+		m11 += rotate_right(q07_bo, 2);
 	}
 
+#ifdef SMALL26BUF
+	WARP_TMP_BUF.flush2(Q26SOLBUF, Q26SOLCTL);
+#endif
 	PERF_STOP_COUNTER(26);
 }
 
@@ -1381,7 +1570,100 @@ __device__ void step_extend_Q33(uint32_t thread_rd_idx)
 	PERF_START_COUNTER(33);
 	using namespace dev;
 
+#ifdef SMALL26BUF
+	// Reconstruct state
+	uint32_t q26_sol0 = Q26SOLBUF.get<0>(thread_rd_idx);
+	uint32_t bo_mask  = Q26SOLBUF.get<1>(thread_rd_idx);
 
+	// Extract boomerangs
+	uint32_t q10_bo = bo_mask & Q10BMASK;
+	uint32_t q12_bo = bo_mask & Q12BMASK;
+	uint32_t q07_bo = (bo_mask>>16) & Q07BMASK;
+
+	const uint32_t q18idx = unpack_q18idx(q26_sol0);
+	const uint32_t q15idx = Q18SOLBUF.get<11>(q18idx);
+	const uint32_t q14idx = Q15SOLBUF.get<11>(q15idx);
+
+	uint32_t q12 = Q18SOLBUF.get<0>(q18idx);
+	uint32_t q13 = Q18SOLBUF.get<1>(q18idx);
+	uint32_t q14 = Q18SOLBUF.get<2>(q18idx);
+	uint32_t q15 = Q18SOLBUF.get<3>(q18idx);
+	uint32_t q16 = Q18SOLBUF.get<4>(q18idx);
+
+	uint32_t m00 = Q14SOLBUF.get<0>(q14idx);
+	uint32_t m01 = Q14SOLBUF.get<1>(q14idx);
+	uint32_t m02 = Q14SOLBUF.get<2>(q14idx);
+	uint32_t m03 = Q14SOLBUF.get<3>(q14idx);
+	uint32_t m04 = Q14SOLBUF.get<4>(q14idx);
+	uint32_t m05 = Q14SOLBUF.get<5>(q14idx);
+	uint32_t m06 = Q14SOLBUF.get<6>(q14idx);
+	uint32_t m07 = Q14SOLBUF.get<7>(q14idx);
+	uint32_t m08 = Q14SOLBUF.get<8>(q14idx);
+	uint32_t m09 = Q14SOLBUF.get<9>(q14idx);
+	uint32_t m10 = Q15SOLBUF.get<5>(q15idx);
+	uint32_t m11 = Q18SOLBUF.get<6>(q18idx);
+	uint32_t m12 = Q18SOLBUF.get<7>(q18idx);
+	uint32_t m13 = Q18SOLBUF.get<8>(q18idx);
+	uint32_t m14 = Q18SOLBUF.get<9>(q18idx);
+	uint32_t m15 = Q18SOLBUF.get<10>(q18idx);
+
+	{
+		uint32_t w14_sol_nb = unpack_w14_nbs(q26_sol0);
+		uint32_t w15_sol_nb = unpack_w15_nbs(q26_sol0);
+
+		m14 |= w14_sol_nb;
+		m15 |= w15_sol_nb;
+
+		q15 += w14_sol_nb;
+		q16 += rotate_left(w14_sol_nb, 5);
+		q16 += w15_sol_nb;
+	}
+
+	// Apply boomerangs
+	m09 ^= q10_bo;
+	m10 ^= rotate_left(q10_bo, 5);
+	m14 ^= rotate_right(q10_bo, 2);
+	m11 ^= q12_bo;
+	m12 ^= rotate_left(q12_bo, 5);
+	q12 ^= q12_bo;
+	m13 ^= (q10_bo>>2) & q12_bo;
+
+	m06 ^= q07_bo;
+	m07 ^= rotate_left(q07_bo, 5);
+	m11 -= rotate_right(q07_bo, 2);
+
+	uint32_t m16 = sha1_mess(m13, m08, m02, m00);
+	uint32_t m17 = sha1_mess(m14, m09, m03, m01);
+	uint32_t m18 = sha1_mess(m15, m10, m04, m02);
+	uint32_t m19 = sha1_mess(m16, m11, m05, m03);
+	uint32_t m20 = sha1_mess(m17, m12, m06, m04);
+	uint32_t m21 = sha1_mess(m18, m13, m07, m05);
+	uint32_t m22 = sha1_mess(m19, m14, m08, m06);
+	uint32_t m23 = sha1_mess(m20, m15, m09, m07);
+	uint32_t m24 = sha1_mess(m21, m16, m10, m08);
+	uint32_t m25 = sha1_mess(m22, m17, m11, m09);
+	uint32_t m26 = sha1_mess(m23, m18, m12, m10);
+	uint32_t m27 = sha1_mess(m24, m19, m13, m11);
+	uint32_t m28 = sha1_mess(m25, m20, m14, m12);
+	uint32_t m29 = sha1_mess(m26, m21, m15, m13);
+	uint32_t m30 = sha1_mess(m27, m22, m16, m14);
+	uint32_t m31 = sha1_mess(m28, m23, m17, m15);
+	uint32_t m32 = sha1_mess(m29, m24, m18, m16);
+
+	uint32_t q17 = sha1_round1(q16, q15, q14, q13, q12, m16);
+	uint32_t q18 = sha1_round1(q17, q16, q15, q14, q13, m17);
+	uint32_t q19 = sha1_round1(q18, q17, q16, q15, q14, m18);
+	uint32_t q20 = sha1_round1(q19, q18, q17, q16, q15, m19);
+	uint32_t q21 = sha1_round2(q20, q19, q18, q17, q16, m20);
+	uint32_t q22 = sha1_round2(q21, q20, q19, q18, q17, m21);
+	uint32_t q23 = sha1_round2(q22, q21, q20, q19, q18, m22);
+
+	uint32_t e = q19;
+	uint32_t d = q20;
+	uint32_t c = q21;
+	uint32_t b = q22;
+	uint32_t a = q23;
+#else
 	uint32_t m17 = Q26SOLBUF.get<10>(thread_rd_idx);
 	uint32_t m18 = Q26SOLBUF.get<11>(thread_rd_idx);
 	uint32_t m19 = Q26SOLBUF.get<12>(thread_rd_idx);
@@ -1414,6 +1696,7 @@ __device__ void step_extend_Q33(uint32_t thread_rd_idx)
 	uint32_t c = Q26SOLBUF.get<2>(thread_rd_idx); // q21
 	uint32_t b = Q26SOLBUF.get<3>(thread_rd_idx); // q22
 	uint32_t a = Q26SOLBUF.get<4>(thread_rd_idx); // q23
+#endif
 	uint32_t E = e + dQ[QOFF + 19];
 	uint32_t D = d + dQ[QOFF + 20];
 	uint32_t C = c + dQ[QOFF + 21];
@@ -1665,8 +1948,12 @@ __device__ void backup_controls()
 		q17_solutions_ctl_bu[blockIdx.x] = Q17SOLCTL;
 		q18_solutions_ctl_bu[blockIdx.x] = Q18SOLCTL;
 		q19_solutions_ctl_bu[blockIdx.x] = Q19SOLCTL;
+#ifndef CB21
 		q21_solutions_ctl_bu[blockIdx.x] = Q21SOLCTL;
+#endif
+#ifndef CB23
 		q23_solutions_ctl_bu[blockIdx.x] = Q23SOLCTL;
+#endif
 		q26_solutions_ctl_bu[blockIdx.x] = Q26SOLCTL;
 		q33_solutions_ctl_bu[blockIdx.x] = Q33SOLCTL;
 		//q53_solutions_ctl_bu[blockIdx.x] = Q53SOLCTL;
@@ -1689,8 +1976,12 @@ __device__ void restore_controls()
 		Q17SOLCTL = q17_solutions_ctl_bu[blockIdx.x];
 		Q18SOLCTL = q18_solutions_ctl_bu[blockIdx.x];
 		Q19SOLCTL = q19_solutions_ctl_bu[blockIdx.x];
+#ifndef CB21
 		Q21SOLCTL = q21_solutions_ctl_bu[blockIdx.x];
+#endif
+#ifndef CB23
 		Q23SOLCTL = q23_solutions_ctl_bu[blockIdx.x];
+#endif
 		Q26SOLCTL = q26_solutions_ctl_bu[blockIdx.x];
 		Q33SOLCTL = q33_solutions_ctl_bu[blockIdx.x];
 		//Q53SOLCTL = q53_solutions_ctl_bu[blockIdx.x];
@@ -1712,9 +2003,19 @@ __global__ void reset_buffers()
 	Q17SOLBUF.reset(Q17SOLCTL);
 	Q18SOLBUF.reset(Q18SOLCTL);
 	Q19SOLBUF.reset(Q19SOLCTL);
+#ifdef CB21
+	CB21BUF.reset();
+#else
 	Q21SOLBUF.reset(Q21SOLCTL);
+#endif
+#ifdef CB23
+	Q23SOLBUF.reset(Q21SOLCTL);
+#else
+	Q23SOLBUF.reset(Q23SOLCTL);
+#endif
+	Q26SOLBUF.reset(Q26SOLCTL);
 	Q33SOLBUF.reset(Q33SOLCTL);
-	//Q53SOLBUF.reset(Q53SOLCTL);
+	Q53SOLBUF.reset(Q53SOLCTL);
 
 //	COLLCANDIDATEBUF.reset(COLLCANDIDATECTL);
 
@@ -1776,7 +2077,7 @@ __global__ void cuda_attack()
 		}
 #endif
 
-#if 1
+#ifndef CB23
 		{
 			uint32_t thidx = Q23SOLBUF.getreadidx(Q23SOLCTL);
 			if (thidx != 0xFFFFFFFF)
@@ -1789,7 +2090,7 @@ __global__ void cuda_attack()
 		}
 #endif
 
-#if 1
+#ifndef CB21
 		{
 			uint32_t thidx = Q21SOLBUF.getreadidx(Q21SOLCTL);
 			if (thidx != 0xFFFFFFFF)
@@ -2151,8 +2452,12 @@ void cuda_main(std::vector<q14sol_t>& q14sols)
 	uint32_t q17oldbufsize[BLOCKS];
 	uint32_t q18oldbufsize[BLOCKS];
 	uint32_t q19oldbufsize[BLOCKS];
+#ifndef CB21
 	uint32_t q21oldbufsize[BLOCKS];
+#endif
+#ifndef CB23
 	uint32_t q23oldbufsize[BLOCKS];
+#endif
 	uint32_t q26oldbufsize[BLOCKS];
 	uint32_t q33oldbufsize[BLOCKS];
 	//uint32_t q53oldbufsize[BLOCKS];
@@ -2164,8 +2469,12 @@ void cuda_main(std::vector<q14sol_t>& q14sols)
 		q17oldbufsize[bl] = q17_solutions_ctl_bu[bl].write_idx;
 		q18oldbufsize[bl] = q18_solutions_ctl_bu[bl].write_idx;
 		q19oldbufsize[bl] = q19_solutions_ctl_bu[bl].write_idx;
+#ifndef CB21
 		q21oldbufsize[bl] = q21_solutions_ctl_bu[bl].write_idx;
+#endif
+#ifndef CB23
 		q23oldbufsize[bl] = q23_solutions_ctl_bu[bl].write_idx;
+#endif
 		q26oldbufsize[bl] = q26_solutions_ctl_bu[bl].write_idx;
 		q33oldbufsize[bl] = q33_solutions_ctl_bu[bl].write_idx;
 		//q53oldbufsize[bl] = q53_solutions_ctl_bu[bl].write_idx;
@@ -2176,8 +2485,12 @@ void cuda_main(std::vector<q14sol_t>& q14sols)
 	uint64_t q17sols = 0;
 	uint64_t q18sols = 0;
 	uint64_t q19sols = 0;
+#ifndef CB21
 	uint64_t q21sols = 0;
+#endif
+#ifndef CB23
 	uint64_t q23sols = 0;
+#endif
 	uint64_t q26sols = 0;
 	uint64_t q33sols = 0;
 	uint64_t q53sols = 0;
@@ -2218,8 +2531,12 @@ void cuda_main(std::vector<q14sol_t>& q14sols)
 			workleft += (q17_solutions_ctl_bu[bl].write_idx - q17_solutions_ctl_bu[bl].read_idx)>>5;
 			workleft += (q18_solutions_ctl_bu[bl].write_idx - q18_solutions_ctl_bu[bl].read_idx)>>5;
 			workleft += (q19_solutions_ctl_bu[bl].write_idx - q19_solutions_ctl_bu[bl].read_idx)>>5;
+#ifndef CB21
 			workleft += (q21_solutions_ctl_bu[bl].write_idx - q21_solutions_ctl_bu[bl].read_idx)>>5;
+#endif
+#ifndef CB23
 			workleft += (q23_solutions_ctl_bu[bl].write_idx - q23_solutions_ctl_bu[bl].read_idx)>>5;
+#endif
 			workleft += (q26_solutions_ctl_bu[bl].write_idx - q26_solutions_ctl_bu[bl].read_idx)>>5;
 			workleft += (q33_solutions_ctl_bu[bl].write_idx - q33_solutions_ctl_bu[bl].read_idx)>>5;
 			//workleft += (q53_solutions_ctl_bu[bl].write_idx - q53_solutions_ctl_bu[bl].read_idx)>>5;
@@ -2230,8 +2547,12 @@ void cuda_main(std::vector<q14sol_t>& q14sols)
 			q17sols += q17_solutions_ctl_bu[bl].write_idx - q17oldbufsize[bl];
 			q18sols += q18_solutions_ctl_bu[bl].write_idx - q18oldbufsize[bl];
 			q19sols += q19_solutions_ctl_bu[bl].write_idx - q19oldbufsize[bl];
+#ifndef CB21
 			q21sols += q21_solutions_ctl_bu[bl].write_idx - q21oldbufsize[bl];
+#endif
+#ifndef CB23
 			q23sols += q23_solutions_ctl_bu[bl].write_idx - q23oldbufsize[bl];
+#endif
 			q26sols += q26_solutions_ctl_bu[bl].write_idx - q26oldbufsize[bl];
 			q33sols += q33_solutions_ctl_bu[bl].write_idx - q33oldbufsize[bl];
 			//q53sols += q53_solutions_ctl_bu[bl].write_idx - q53oldbufsize[bl];
@@ -2242,8 +2563,12 @@ void cuda_main(std::vector<q14sol_t>& q14sols)
 			q17oldbufsize[bl] = q17_solutions_ctl_bu[bl].write_idx;
 			q18oldbufsize[bl] = q18_solutions_ctl_bu[bl].write_idx;
 			q19oldbufsize[bl] = q19_solutions_ctl_bu[bl].write_idx;
+#ifndef CB21
 			q21oldbufsize[bl] = q21_solutions_ctl_bu[bl].write_idx;
+#endif
+#ifndef CB23
 			q23oldbufsize[bl] = q23_solutions_ctl_bu[bl].write_idx;
+#endif
 			q26oldbufsize[bl] = q26_solutions_ctl_bu[bl].write_idx;
 			q33oldbufsize[bl] = q33_solutions_ctl_bu[bl].write_idx;
 			//q53oldbufsize[bl] = q53_solutions_ctl_bu[bl].write_idx;
@@ -2256,9 +2581,19 @@ void cuda_main(std::vector<q14sol_t>& q14sols)
 		cout << "Q17 sols:\t" << q17sols << "\t" << (double(q17sols)/cuda_total_time.time()) << "#/s \t" << log(double(q17sols)/double(q16sols))/log(2.0) << endl;
 		cout << "Q18 sols:\t" << q18sols << "\t" << (double(q18sols)/cuda_total_time.time()) << "#/s \t" << log(double(q18sols)/double(q17sols))/log(2.0) << endl;
 		cout << "Q19 sols:\t" << q19sols << "\t" << (double(q19sols)/cuda_total_time.time()) << "#/s \t" << log(double(q19sols)/double(q18sols))/log(2.0) << endl;
+#if defined(CB21) && defined(CB23)
+		cout << "Q26 sols:\t" << q26sols << "\t" << (double(q26sols)/cuda_total_time.time()) << "#/s \t" << log(double(q26sols)/double(q19sols))/log(2.0) << endl;
+#elif	defined(CB21)
+		cout << "Q23 sols:\t" << q23sols << "\t" << (double(q23sols)/cuda_total_time.time()) << "#/s \t" << log(double(q23sols)/double(q19sols))/log(2.0) << endl;
+		cout << "Q26 sols:\t" << q26sols << "\t" << (double(q26sols)/cuda_total_time.time()) << "#/s \t" << log(double(q26sols)/double(q23sols))/log(2.0) << endl;
+#elif defined(CB23)
+		cout << "Q21 sols:\t" << q21sols << "\t" << (double(q21sols)/cuda_total_time.time()) << "#/s \t" << log(double(q21sols)/double(q19sols))/log(2.0) << endl;
+		cout << "Q26 sols:\t" << q26sols << "\t" << (double(q26sols)/cuda_total_time.time()) << "#/s \t" << log(double(q26sols)/double(q21sols))/log(2.0) << endl;
+#else
 		cout << "Q21 sols:\t" << q21sols << "\t" << (double(q21sols)/cuda_total_time.time()) << "#/s \t" << log(double(q21sols)/double(q19sols))/log(2.0) << endl;
 		cout << "Q23 sols:\t" << q23sols << "\t" << (double(q23sols)/cuda_total_time.time()) << "#/s \t" << log(double(q23sols)/double(q21sols))/log(2.0) << endl;
 		cout << "Q26 sols:\t" << q26sols << "\t" << (double(q26sols)/cuda_total_time.time()) << "#/s \t" << log(double(q26sols)/double(q23sols))/log(2.0) << endl;
+#endif
 		cout << "Q33 sols:\t" << q33sols << "\t" << (double(q33sols)/cuda_total_time.time()) << "#/s \t" << log(double(q33sols)/double(q26sols))/log(2.0) << endl;
 		cout << "Q53 sols:\t" << q53sols << "\t" << (double(q53sols)/cuda_total_time.time()) << "#/s \t" << log(double(q53sols)/double(q33sols))/log(2.0) << endl;
 //		cout << "Q61 sols:\t" << q61sols << "\t" << (double(q61sols)/cuda_total_time.time()) << "#/s \t" << log(double(q61sols)/double(q53sols))/log(2.0) << endl;

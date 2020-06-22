@@ -733,3 +733,173 @@ class warp_tmp_buf_t
 
 
 };
+
+template<void callback(uint32_t)>
+class warp_callback_buf1_t
+{
+	public:
+	// temporary buffer for 64 2-word elems: two halves of 32 elems
+	// whenever one half is full it is flushed to the main buffer
+	uint32_t val[64];
+	volatile char idx;
+
+	__device__ void reset()
+	{
+		idx = 0;
+	}
+
+	// store 2-word elements in temporary shared buffer, flush to global buffer for each 32 values
+	__device__ inline void write(bool dowrite, uint32_t _val)
+	{
+		uint32_t mask = __ballot_sync(0xffffffff, dowrite);
+		if (mask == 0)
+		{
+			return;
+		}
+
+		uint32_t count = __popc(mask);
+		uint32_t offset = count - __popc(mask >> (threadIdx.x&31));
+		uint32_t baseidx = idx;
+		if ((threadIdx.x&31)==0)
+		{
+			idx = (idx + (char)(count)) % 64;
+		}
+
+		if (dowrite)
+		{
+			val[(baseidx + offset) % 64] = _val;
+		}
+
+		// flush 'full' half if we cross over halves
+		if ((idx^baseidx)&32)
+		{
+			baseidx &= 32; // point to start of 'full' half
+			callback(val[baseidx + (threadIdx.x&31)] );
+		}
+	}
+
+	__device__ inline void flush()
+	{
+		uint32_t baseidx = (uint32_t)(idx) & 32;
+		if (idx != baseidx)
+		{
+		  if ((threadIdx.x&31)<(idx-baseidx))
+			callback(val[baseidx + (threadIdx.x&31)] );
+		}
+		reset();
+	}
+
+
+};
+
+template<void callback(uint32_t, uint32_t)>
+class warp_callback_buf2_t
+{
+	public:
+	// temporary buffer for 64 2-word elems: two halves of 32 elems
+	// whenever one half is full it is flushed to the main buffer
+	uint32_t val1[64];
+	uint32_t val2[64];
+	volatile char idx;
+
+	__device__ void reset()
+	{
+		idx = 0;
+	}
+
+	// store 2-word elements in temporary shared buffer, flush to global buffer for each 32 values
+	__device__ inline void write(bool dowrite, uint32_t _val1, uint32_t _val2)
+	{
+		uint32_t mask = __ballot_sync(0xffffffff, dowrite);
+		if (mask == 0)
+		{
+			return;
+		}
+
+		uint32_t count = __popc(mask);
+		uint32_t offset = count - __popc(mask >> (threadIdx.x&31));
+		uint32_t baseidx = idx;
+		if ((threadIdx.x&31)==0)
+		{
+			idx = (idx + (char)(count)) % 64;
+		}
+
+		if (dowrite)
+		{
+			val1[(baseidx + offset) % 64] = _val1;
+			val2[(baseidx + offset) % 64] = _val2;
+		}
+
+		// flush 'full' half if we cross over halves
+		if ((idx^baseidx)&32)
+		{
+			baseidx &= 32; // point to start of 'full' half
+			callback(val1[baseidx + (threadIdx.x&31)], val2[baseidx + (threadIdx.x&31)] );
+		}
+	}
+
+	__device__ inline void flush()
+	{
+		uint32_t baseidx = (uint32_t)(idx) & 32;
+		if (idx != baseidx)
+		{
+		  if ((threadIdx.x&31)<(idx-baseidx))
+			callback(val1[baseidx + (threadIdx.x&31)], val2[baseidx + (threadIdx.x&31)] );
+		}
+		reset();
+	}
+
+
+};
+
+template<void callback(uint32_t, uint32_t)>
+class thread_callback_buf_t
+{
+	public:
+	// temporary buffer for one 2-word elem per thread
+	uint32_t val1, val2;
+	char used;
+
+	__device__ thread_callback_buf_t() : used(0) {}
+
+	// store 2-word elements in temporary buffer, run callback for each 32 values
+	__device__ inline void write(bool dowrite, uint32_t _val1, uint32_t _val2)
+	{
+		uint32_t mask = __ballot_sync(0xffffffff, dowrite);
+		if (mask == 0)
+		{
+			return;
+		}
+
+		int count = __popc(mask);
+		int offset = 0;
+		for (int nbit = 0; mask; nbit++) {
+			if (nbit == ((threadIdx.x-used)&31))
+				offset = mask;
+			mask &= mask-1;
+		}
+		offset = __ffs(offset)-1;
+
+		uint32_t new_val1 = __shfl_sync(0xffffffff,_val1,offset); // Read from other thread
+		uint32_t new_val2 = __shfl_sync(0xffffffff,_val2,offset); // Read from other thread
+
+		if (used + count >= 32) {
+			// Full buffer: run callback
+			if ((threadIdx.x&31) >= used) {
+				val1 = new_val1;
+				val2 = new_val2;
+			}
+			callback(val1, val2);
+			val1 = new_val1;
+			val2 = new_val2;
+		} else {
+			// Store relevant values
+			if (offset != -1) {
+				val1 = new_val1;
+				val2 = new_val2;
+			}
+		}
+
+		used = (used + count)&31;
+	}
+};

@@ -23,31 +23,33 @@
 #define W14FLALLM 0x00001800
 
 
-#define Q07BOOMS  0x00000140
-#define Q10BOOMS  0x00000080
+#define Q07BOOMS  ((uint32_t)0x00000140)
+#define Q10BOOMS  ((uint32_t)0x00000080)
+#define Q12BOOMS  ((uint32_t)0x00000020)
+
+#define Q07BMASK  0x00000140)
+#define Q10BMASK  0x00000080
+#define Q12BMASK  0x00000070
 
 /// Per step neutral bits masks /////////
 /// Q16
 #define W11NBQ16M 0x00000180 // ........ ........ .......x x....... (2 of 'em)
-#define W12NBQ16M 0x00003E00 // ........ ........ ..xxxxx. ........ (5 of 'em)
+#define W12NBQ16M 0x00003000 // ........ ........ ..xx.... ........ (2 of 'em)
 #define W13NBQ16M 0x40008000 // .x...... ........ x....... ........ (2 of 'em)
 #define W14FLQ16M 0xFFFFE7FF // ........ ........ ...FF... ........ <2 FLIPS>
 /// Q17
 #define W12NBQ17M 0x000001E0 // ........ ........ .......x xxx..... (4 of 'em)
 #define W13NBQ17M 0x00002C00 // ........ ........ ..x.xx.. ........ (3 of 'em)
 /// Q18
-#define W13NBQ18M 0x000003E0 // ........ ........ ......xx xxx..... (5 of 'em)
+#define W13NBQ18M 0x000003C0 // ........ ........ ......xx xx...... (4 of 'em)
 #define W14NBQ18M 0x00000400 // ........ ........ .....x.. ........ (1 of 'em)
 #define W14FLQ18M 0xFFFFF7FF // ........ ........ ....F... ........ <1 FLIP >
 /// Q19
-//#define W14NBQ19M 0x000003D0 // ........ ........ ......xx xx.x.... (5 of 'em)
 #define W14NBQ19M 0x000002C0 // ........ ........ ......x. xx...... (3 of 'em)
-//#define W15NBQ19M 0x00001600 // ........ ........ ...x.xx. ........ (3 of 'em)
-#define W15NBQ19M 0x00001400 // ........ ........ ...x.x.. ........ (2 of 'em)
+#define W15NBQ19M 0x00000400 // ........ ........ .....x.. ........ (1 of 'em)
 /// Q20
-//#define W15NBQ20M 0x000001E0 // ........ ........ .......x xxx..... (4 of 'em)
 #define W14NBQ20M 0x00000110 // ........ ........ .......x ...x.... (2 of 'em)
-#define W15NBQ20M 0x000003E0 // ........ ........ ......xx xxx..... (5 of 'em)
+#define W15NBQ20M 0x00000160 // ........ ........ .......x .xx..... (3 of 'em)
 
 /// Neutral bits packing (Q16--17)
 /// W11: ........ ........ .......x x.......
