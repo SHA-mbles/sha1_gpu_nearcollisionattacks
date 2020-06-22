@@ -1,6 +1,7 @@
 /*****
   Copyright (C) 2017 Pierre Karpman, INRIA France/Nanyang Technological University Singapore (-2016), CWI (2016/2017), L'Universite Grenoble Alpes (2017-)
             (C) 2017 Marc Stevens, Centrum Wiskunde & Informatica (CWI), Amsterdam.
+            (C) 2019 Gaëtan Leurent, Inria, Paris.
 
   This file is part of sha1_gpu_nearcollisionattacks source-code and released under the MIT License
 *****/
