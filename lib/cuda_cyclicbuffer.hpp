@@ -86,7 +86,7 @@ class cyclic_buffer_control_mask_t
 			baseidx = atomicAdd((uint32_t*)&write_idx,count);
 		}
 		// thread ZERO passes baseidx to entire warp
-		baseidx = __shfl(baseidx,0);
+		baseidx = __shfl_sync(0xffffffff,baseidx,0);
 		return (baseidx + offset);
 	}
 
@@ -98,10 +98,10 @@ class cyclic_buffer_control_mask_t
 		while (true)
 		{
 			// obtain warp-wide unique race-free value of read_idx
-			uint32_t baseidx = __shfl(read_idx,0);
+			uint32_t baseidx = __shfl_sync(0xffffffff,read_idx,0);
 			uint32_t thrdidx = (baseidx+(threadIdx.x&31));
 			// if not safe to read then return false
-			if (!__all(0 != safereadvals[ thrdidx % N ] ))
+			if (!__all_sync(0xffffffff,0 != safereadvals[ thrdidx % N ] ))
 			{
 				return 0xFFFFFFFF;
 			}
@@ -112,7 +112,7 @@ class cyclic_buffer_control_mask_t
 				baseidx2 = atomicCAS((uint32_t*)&read_idx, baseidx, baseidx+32);
 			}
 			// thread ZERO passes baseidx2 to entire warp
-			baseidx2 = __shfl(baseidx2, 0);
+			baseidx2 = __shfl_sync(0xffffffff,baseidx2, 0);
 			// if read_idx was successfully increased return (true,baseidx+offset)
 			if (baseidx2 == baseidx)
 			{
@@ -132,10 +132,10 @@ class cyclic_buffer_control_mask_t
 		while (true)
 		{
 			// obtain warp-wide unique race-free value of read_idx
-			uint32_t baseidx = __shfl(read_idx, 0);
+			uint32_t baseidx = __shfl_sync(0xffffffff,read_idx, 0);
 			uint32_t thrdidx = (baseidx + (threadIdx.x & 31));
 			bool issafetoread = (0 != safereadvals[thrdidx % N]);
-			uint32_t safereadmask = __ballot(issafetoread);
+			uint32_t safereadmask = __ballot_sync(0xffffffff, issafetoread);
 			if (safereadmask == 0)
 				return 0xFFFFFFFF;
 			// safereadmask needs to be all 1-bits for some lower half, the remaining upper half needs to be all 0-bits
@@ -150,7 +150,7 @@ class cyclic_buffer_control_mask_t
 				baseidx2 = atomicCAS((uint32_t*)&read_idx, baseidx, baseidx + __popc(safereadmask));
 			}
 			// thread ZERO passes baseidx2 to entire warp
-			baseidx2 = __shfl(baseidx2, 0);
+			baseidx2 = __shfl_sync(0xffffffff,baseidx2, 0);
 			// increase failed due to race, try again
 			if (baseidx2 != baseidx)
 				continue;
@@ -242,7 +242,7 @@ class cyclic_buffer_mask_t
 		)
 	{
 #ifdef __CUDA_ARCH__
-		uint32_t mask = __ballot(dowrite);
+		uint32_t mask = __ballot_sync(0xffffffff, dowrite);
 		if (mask == 0) 
 		{
 			return;
@@ -383,7 +383,7 @@ class cyclic_buffer_control_cas_t
 			baseidx = atomicAdd((uint32_t*)&write_idx,count);
 		}
 		// thread ZERO passes baseidx to entire warp
-		baseidx = __shfl(baseidx,0);
+		baseidx = __shfl_sync(0xffffffff,baseidx,0);
 		return baseidx + offset;
 	}
 
@@ -409,8 +409,8 @@ class cyclic_buffer_control_cas_t
 		while (true)
 		{
 			// obtain warp-wide unique race-free value of read_idx
-			uint32_t baseidx = __shfl(read_idx,0);
-			uint32_t baseidxdist = __shfl(written_idx,0);
+			uint32_t baseidx = __shfl_sync(0xffffffff,read_idx,0);
+			uint32_t baseidxdist = __shfl_sync(0xffffffff,written_idx,0);
 			// if not safe to read then return false
 			if ( baseidxdist-baseidx < 32)
 			{
@@ -424,7 +424,7 @@ class cyclic_buffer_control_cas_t
 				baseidx2 = atomicCAS((uint32_t*)&read_idx, baseidx, baseidx+32);
 			}
 			// thread ZERO passes baseidx2 to entire warp
-			baseidx2 = __shfl(baseidx2, 0);
+			baseidx2 = __shfl_sync(0xffffffff,baseidx2, 0);
 			// if read_idx was successfully increased return (true,baseidx+offset)
 			if (baseidx2 == baseidx)
 			{
@@ -442,8 +442,8 @@ class cyclic_buffer_control_cas_t
 		while (true)
 		{
 			// obtain warp-wide unique race-free value of read_idx
-			uint32_t baseidx = __shfl(read_idx, 0);
-			uint32_t baseidxdist = __shfl(written_idx, 0);
+			uint32_t baseidx = __shfl_sync(0xffffffff,read_idx, 0);
+			uint32_t baseidxdist = __shfl_sync(0xffffffff,written_idx, 0);
 			if (baseidxdist == baseidx)
 				return 0xFFFFFFFF;
 
@@ -455,7 +455,7 @@ class cyclic_buffer_control_cas_t
 				baseidx2 = atomicCAS((uint32_t*)&read_idx, baseidx, baseidxdist);
 			}
 			// thread ZERO passes baseidx2 to entire warp
-			baseidx2 = __shfl(baseidx2, 0);
+			baseidx2 = __shfl_sync(0xffffffff,baseidx2, 0);
 			// increase failed due to race, try again
 			if (baseidx2 != baseidx)
 				continue;
@@ -534,7 +534,7 @@ class cyclic_buffer_cas_t
 		)
 	{
 #ifdef __CUDA_ARCH__
-		uint32_t mask = __ballot(dowrite);
+		uint32_t mask = __ballot_sync(0xffffffff, dowrite);
 		if (mask == 0) 
 		{
 			return;
@@ -651,7 +651,7 @@ class warp_tmp_buf_t
 	template<typename buffer_t, typename control_t>
 	__device__ inline void write1(bool dowrite, uint32_t _val1, buffer_t& buf, control_t& ctrl)
 	{
-		uint32_t mask = __ballot(dowrite);
+		uint32_t mask = __ballot_sync(0xffffffff, dowrite);
 		if (mask == 0)
 		{
 			return;
@@ -681,7 +681,7 @@ class warp_tmp_buf_t
 	template<class buffer_t, class control_t>
 	__device__ inline void write2(bool dowrite, uint32_t _val1, uint32_t _val2, buffer_t& buf, control_t& ctrl)
 	{
-		uint32_t mask = __ballot(dowrite);
+		uint32_t mask = __ballot_sync(0xffffffff, dowrite);
 		if (mask == 0)
 		{
 			return;
